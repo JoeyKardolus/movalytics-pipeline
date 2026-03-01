@@ -441,6 +441,8 @@ def process_video(
     kalman_q_vel: float = 0.001,
     ema_alpha_static: float = 0.10,
     marker_indices: np.ndarray | None = None,
+    preloaded_frames: np.ndarray | None = None,
+    preloaded_fps: float | None = None,
 ):
     """Process video frames through SAM 3D Body with post-processing.
 
@@ -464,10 +466,21 @@ def process_video(
         ema_alpha_static: EMA alpha for static global rotation segments.
         marker_indices: (M,) int array of MHR mesh vertex indices for marker
             extraction. If provided, saves marker_positions.npy (N, M, 3).
+        preloaded_frames: (N, H, W, 3) uint8 RGB frames from shared memory.
+            If provided, skips video decoding entirely.
+        preloaded_fps: FPS when using preloaded frames.
     """
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    # Use pre-decoded frames from shared memory, or fall back to VideoCapture
+    use_preloaded = preloaded_frames is not None
+    cap = None
+    if use_preloaded:
+        n_frames = preloaded_frames.shape[0]
+        fps = preloaded_fps or 25.0
+        print(f"[sam3d-worker] Using {n_frames} pre-decoded frames (shared memory)")
+    else:
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # Per-frame output arrays
     all_joint_coords = []     # (N, 127, 3) camera space, meters
@@ -485,11 +498,14 @@ def process_video(
 
     # Compute camera intrinsics once from first frame (MoGe2 FOV estimation)
     # Camera FOV doesn't change between video frames, so compute once and reuse.
-    ret, first_frame = cap.read()
-    if not ret:
-        print("[sam3d-worker] ERROR: Cannot read first frame", file=sys.stderr)
-        return
-    first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+    if use_preloaded:
+        first_frame_rgb = preloaded_frames[0]
+    else:
+        ret, first_frame = cap.read()
+        if not ret:
+            print("[sam3d-worker] ERROR: Cannot read first frame", file=sys.stderr)
+            return
+        first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
     if estimator.fov_estimator is not None:
         print("[sam3d-worker] Computing FOV from first frame (MoGe2)...")
         cam_int = estimator.fov_estimator.get_cam_intrinsics(first_frame_rgb)
@@ -497,7 +513,8 @@ def process_video(
         print(f"[sam3d-worker] Camera intrinsics cached (focal={cam_int[0, 0, 0]:.1f})")
     else:
         cam_int = None
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # reset to start
+    if cap is not None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # reset to start
 
     # Lazy-load vitdet when no boxes provided (fallback mode)
     if boxes is None and estimator.human_detector is None:
@@ -514,16 +531,24 @@ def process_video(
     print(f"[sam3d-worker] Processing {n_frames} frames at {fps:.1f} fps")
     if use_mask and estimator.human_segmentor is not None:
         print("[sam3d-worker] Mask conditioning ENABLED")
+
+    # Disable per-frame torch.cuda.empty_cache() in process_one_image.
+    # The vendored SAM 3D code calls it every frame (~5-15ms overhead each).
+    _orig_empty_cache = torch.cuda.empty_cache
+    torch.cuda.empty_cache = lambda: None
+
     t0 = time.perf_counter()
     frame_idx = 0
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # Convert BGR → RGB (SAM 3D expects RGB)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    while frame_idx < n_frames:
+        # Get frame: from shared memory or VideoCapture
+        if use_preloaded:
+            frame_rgb = preloaded_frames[frame_idx]
+        else:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Get bbox for this frame
         # If boxes provided (YOLOX), use them. Otherwise let vitdet detect.
@@ -531,7 +556,7 @@ def process_video(
             if frame_idx < len(boxes):
                 bbox = boxes[frame_idx:frame_idx + 1]  # (1, 4)
             else:
-                h, w = frame.shape[:2]
+                h, w = frame_rgb.shape[:2]
                 bbox = np.array([[0, 0, w, h]])
         else:
             bbox = None  # vitdet will detect per-frame
@@ -583,7 +608,13 @@ def process_video(
             fps_proc = frame_idx / elapsed
             print(f"  [frame {frame_idx}/{n_frames}] {fps_proc:.1f} fps")
 
-    cap.release()
+    if cap is not None:
+        cap.release()
+
+    # Restore and run empty_cache once after all frames
+    torch.cuda.empty_cache = _orig_empty_cache
+    torch.cuda.empty_cache()
+
     elapsed = time.perf_counter() - t0
     print(f"[sam3d-worker] Processed {frame_idx} frames in {elapsed:.1f}s "
           f"({frame_idx / elapsed:.1f} fps)")
@@ -853,6 +884,12 @@ def main():
     parser.add_argument("--marker-indices", type=str, default=None,
                         help="Path to .npy file with MHR vertex indices (M,) "
                              "for per-frame surface marker extraction")
+    parser.add_argument("--frames-memmap", type=str, default=None,
+                        help="Path to shared memory memmap with pre-decoded RGB frames")
+    parser.add_argument("--frames-shape", type=str, default=None,
+                        help="Comma-separated shape of frames array (N,H,W,C)")
+    parser.add_argument("--fps", type=float, default=None,
+                        help="Video FPS (required when using --frames-memmap)")
     args = parser.parse_args()
 
     # Load bounding boxes (optional — vitdet detects if not provided)
@@ -862,6 +899,17 @@ def main():
         print(f"[sam3d-worker] Loaded {len(boxes)} bounding boxes from {args.boxes}")
     else:
         print("[sam3d-worker] No bounding boxes provided — vitdet will detect per-frame")
+
+    # Load pre-decoded frames from shared memory (optional)
+    preloaded_frames = None
+    preloaded_fps = None
+    if args.frames_memmap and args.frames_shape:
+        shape = tuple(int(x) for x in args.frames_shape.split(","))
+        preloaded_frames = np.memmap(
+            args.frames_memmap, dtype=np.uint8, mode='r', shape=shape,
+        )
+        preloaded_fps = args.fps
+        print(f"[sam3d-worker] Loaded {shape[0]} pre-decoded frames from shared memory")
 
     # Load marker indices for surface marker extraction (optional)
     marker_indices = None
@@ -889,6 +937,8 @@ def main():
         kalman_q_vel=args.kalman_q_vel,
         ema_alpha_static=args.ema_alpha_static,
         marker_indices=marker_indices,
+        preloaded_frames=preloaded_frames,
+        preloaded_fps=preloaded_fps,
     )
 
 

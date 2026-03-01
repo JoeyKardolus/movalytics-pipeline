@@ -103,6 +103,7 @@ class BBoxDetector:
         frames: np.ndarray,
         fps: float,
         visibility_min: float = 0.3,
+        detect_stride: int = 1,
     ) -> PoseDetectionResult:
         """Run YOLOX person detection on video frames.
 
@@ -110,6 +111,8 @@ class BBoxDetector:
             frames: (N, H, W, 3) RGB frames.
             fps: Frame rate for timestamps.
             visibility_min: Not used (no keypoints), kept for API compat.
+            detect_stride: Run detection every Nth frame (1=every frame).
+                Skipped frames are filled by interpolation.
 
         Returns:
             PoseDetectionResult with bounding boxes in metadata.
@@ -141,6 +144,10 @@ class BBoxDetector:
         detected_frames = []  # (frame_idx, bbox) for interpolation
 
         for idx in range(n_frames):
+            # Skip non-stride frames (always detect first and last)
+            if detect_stride > 1 and idx % detect_stride != 0 and idx != n_frames - 1:
+                continue
+
             frame_bgr = cv2.cvtColor(frames[idx], cv2.COLOR_RGB2BGR)
             det_boxes = self._det_model(frame_bgr)  # (P, 4) xyxy
 
@@ -184,7 +191,10 @@ class BBoxDetector:
         if self.use_smoothing and len(detected_frames) > 0:
             bboxes = self._smooth_boxes(bboxes, timestamps)
 
-        print(f"[BBoxDetector] {len(detected_frames)}/{n_frames} frames detected")
+        n_detected = len(detected_frames)
+        stride_info = f", stride={detect_stride}" if detect_stride > 1 else ""
+        print(f"[BBoxDetector] {n_detected}/{n_frames} frames detected"
+              f"{stride_info}")
 
         return PoseDetectionResult(
             keypoints_2d=keypoints_2d,

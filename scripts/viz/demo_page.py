@@ -1447,8 +1447,9 @@ const ANGLE_PANELS = {
     ['hip_abd',   'Hip Abd/Adduction',      'hip_R','hip_abd_deg',   'hip_L','hip_abd_deg',   'hip_abd_deg'],
     ['hip_rot',   'Hip Int/Ext Rotation',   'hip_R','hip_rot_deg',   'hip_L','hip_rot_deg',   'hip_rot_deg'],
     ['knee_flex', 'Knee Flex/Extension',    'knee_R','knee_flex_deg','knee_L','knee_flex_deg','knee_flex_deg'],
+    null,
+    null,
     ['ankle_flex','Ankle Dorsi/Plantar',    'ankle_R','ankle_flex_deg','ankle_L','ankle_flex_deg','ankle_flex_deg'],
-    ['ankle_abd', 'Ankle Inv/Eversion',     'ankle_R','ankle_abd_deg','ankle_L','ankle_abd_deg',null],
   ],
   trunk: [
     ['trunk_flex',  'Trunk Flex/Extension', 'trunk','trunk_flex_deg', null,null, 'trunk_flex_deg'],
@@ -1804,7 +1805,9 @@ function buildAngleChartsHTML(vd) {
 
   function sectionHTML(id, title, panelDefs) {
     let panels = '';
-    for (const [panelId, panelTitle] of panelDefs) {
+    for (const entry of panelDefs) {
+      if (!entry) { panels += '<div></div>'; continue; }
+      const [panelId, panelTitle] = entry;
       panels += `<div class="angle-panel">
         <div class="angle-panel-title">${panelTitle} (\u00b0)</div>
         <canvas id="ac-${n}-${panelId}"></canvas>
@@ -1863,7 +1866,9 @@ function initAngleCharts(name, vd) {
     ...ANGLE_PANELS.upperBody,
   ];
 
-  for (const [panelId, title, rJoint, rCol, lJoint, lCol, normKey] of allPanels) {
+  for (const entry of allPanels) {
+    if (!entry) continue;
+    const [panelId, title, rJoint, rCol, lJoint, lCol, normKey] = entry;
     const canvas = document.getElementById(`ac-${name}-${panelId}`);
     if (!canvas) continue;
 

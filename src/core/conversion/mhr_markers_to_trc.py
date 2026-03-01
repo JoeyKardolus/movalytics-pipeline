@@ -35,9 +35,20 @@ from src.shared.constants import MHR70_KEYPOINTS, MHR_JOINT_CENTERS
 from src.shared.coordinate_transforms import CAMERA_TO_PIPELINE, MHR_BODY_TO_PIPELINE
 from src.shared.filtering import butterworth_lowpass
 
-# Local aliases for readability
-_MHR_BODY_TO_PIPELINE = MHR_BODY_TO_PIPELINE
-_CAMERA_TO_PIPELINE = CAMERA_TO_PIPELINE
+# Corrected transforms for TRC positions.
+# The base transforms in coordinate_transforms.py have wrong axis comments:
+#   MHR body-centric is actually X=left, Y=up, Z=FORWARD (not backward).
+#   Camera (after Y/Z flip) is X=left, Y=down, Z=BACKWARD (not forward).
+# Verified from rest-pose mesh: ASIS at Z=+0.10, PSIS at Z=-0.11 → Z=forward.
+#   R_hip at X=-0.078, L_hip at X=+0.078 → X=left.
+# Fix: negate rows 0 and 2 so X_pipe=forward and Z_pipe=right.
+_MHR_BODY_TO_PIPELINE = MHR_BODY_TO_PIPELINE.copy()
+_MHR_BODY_TO_PIPELINE[0] *= -1  # X_pipe = Z_mhr (forward), not -Z_mhr
+_MHR_BODY_TO_PIPELINE[2] *= -1  # Z_pipe = -X_mhr (right), not X_mhr
+
+_CAMERA_TO_PIPELINE = CAMERA_TO_PIPELINE.copy()
+_CAMERA_TO_PIPELINE[0] *= -1  # X_pipe = -Z_cam (forward), not Z_cam
+_CAMERA_TO_PIPELINE[2] *= -1  # Z_pipe = -X_cam (right), not X_cam
 _MHR_JOINT_CENTERS = MHR_JOINT_CENTERS
 _MHR70_KEYPOINTS = MHR70_KEYPOINTS
 
@@ -197,3 +208,60 @@ def mhr_markers_to_trc(
           f"{n_kp} keypoints), {n_frames} frames → {output_path}")
 
     return output_path
+
+
+def mhr_rest_pose_to_trc(
+    rest_vertices: np.ndarray,
+    marker_names: list[str],
+    subject_height: float,
+    output_path: Path | str,
+    rest_joint_coords: np.ndarray | None = None,
+) -> Path:
+    """Create a single-frame rest-pose TRC for IK calibration.
+
+    Uses the MHR rest-pose mesh vertices to extract surface markers
+    in the same way as the per-frame pipeline. The resulting .mot from
+    running IK on this TRC provides the "zero offset" angles caused by
+    model shape mismatch (e.g. MHR pelvis deeper than OpenSim model).
+
+    Args:
+        rest_vertices: (V, 3) MHR rest-pose mesh vertices (body-centric).
+        marker_names: List of M surface marker names.
+        subject_height: Subject height in meters.
+        output_path: Path for output TRC file.
+        rest_joint_coords: (127, 3) MHR rest-pose joint positions (body-centric).
+            Converted to camera convention internally for mhr_markers_to_trc().
+
+    Returns:
+        Path to the written single-frame TRC file.
+    """
+    # Load marker vertex indices from atlas
+    atlas_dir = Path(__file__).parent
+    indices_path = atlas_dir / "mhr_marker_indices.npy"
+    if not indices_path.exists():
+        raise FileNotFoundError(f"Marker atlas not found: {indices_path}")
+    marker_indices = np.load(indices_path)
+
+    # Extract rest-pose marker positions: (M, 3) → (1, M, 3)
+    rest_markers = rest_vertices[marker_indices][np.newaxis]
+
+    # Convert rest_joint_coords from body-centric to camera convention
+    # so mhr_markers_to_trc applies the correct transform.
+    # Body-centric: X=left, Y=up, Z=forward
+    # Camera:       X=left, Y=down, Z=backward (Y/Z flip)
+    jc_camera = None
+    if rest_joint_coords is not None:
+        jc_camera = rest_joint_coords.copy()
+        jc_camera[:, 1] *= -1  # Y flip
+        jc_camera[:, 2] *= -1  # Z flip
+        jc_camera = jc_camera[np.newaxis]  # (127, 3) → (1, 127, 3)
+
+    return mhr_markers_to_trc(
+        marker_positions=rest_markers,
+        marker_names=marker_names,
+        subject_height=subject_height,
+        fps=25.0,  # arbitrary, single frame
+        output_path=output_path,
+        rest_vertices=rest_vertices,
+        joint_coords=jc_camera,
+    )

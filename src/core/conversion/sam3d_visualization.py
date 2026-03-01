@@ -11,7 +11,9 @@ Layout: 8 rows x 2 columns
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 matplotlib.use("Agg")
@@ -116,6 +118,51 @@ _COLORS = {
     "dev":  "#756BB1",
 }
 
+# Physiological ROM limits (AAOS/ISB) — degrees, matching OpenSim sign conventions.
+# Values beyond these indicate tracking/IK errors.
+_PHYSIO_ROM: dict[str, tuple[float, float]] = {
+    "hip_flex_deg":      (-30, 130),
+    "hip_abd_deg":       (-50, 50),
+    "hip_rot_deg":       (-50, 50),
+    "knee_flex_deg":     (-10, 150),
+    "ankle_flex_deg":    (-50, 30),
+    "ankle_abd_deg":     (-35, 35),
+    "pelvis_flex_deg":   (-20, 35),
+    "pelvis_abd_deg":    (-30, 30),
+    "pelvis_rot_deg":    (-35, 35),
+    "trunk_flex_deg":    (-35, 80),
+    "trunk_abd_deg":     (-45, 45),
+    "trunk_rot_deg":     (-50, 50),
+    "shoulder_flex_deg": (-60, 180),
+    "shoulder_abd_deg":  (-45, 180),
+    "shoulder_rot_deg":  (-100, 100),
+    "elbow_flex_deg":    (-10, 155),
+}
+
+
+def _load_normative_data(
+    normative_path: Path,
+) -> dict[str, tuple[float, float]]:
+    """Load normative gait data and return static min/max bands per angle.
+
+    The Schwartz 2008 data is gait-cycle-percentage indexed. For general
+    (non-gait) activities, we collapse to the full range across the gait
+    cycle: (min of lo, max of hi). This gives a "healthy walking range"
+    reference band.
+
+    Returns:
+        Dict mapping angle column name → (band_lo, band_hi) in degrees.
+    """
+    with open(normative_path) as f:
+        data = json.load(f)
+
+    bands: dict[str, tuple[float, float]] = {}
+    for angle_name, vals in data.items():
+        lo = min(vals["lo"])
+        hi = max(vals["hi"])
+        bands[angle_name] = (lo, hi)
+    return bands
+
 _LAYOUT = [
     ("pelvis",     "Pelvis",           "pelvis",   0, None),
     ("trunk",      "Trunk / Lumbar",   "trunk",    1, None),
@@ -194,6 +241,7 @@ def plot_sam3d_clinical_angles(
     output_path: Path | None = None,
     title_prefix: str = "",
     dpi: int = 150,
+    normative_path: Path | None = None,
 ) -> None:
     """ISB-standard clinical joint angle visualization for SAM 3D Body.
 
@@ -202,9 +250,21 @@ def plot_sam3d_clinical_angles(
         output_path: Save path (None = plt.show()).
         title_prefix: Video name prefix for title.
         dpi: Output resolution.
+        normative_path: Path to normative gait data JSON (Schwartz 2008).
+            When provided, renders gray bands showing healthy walking range
+            and red dashed lines at physiological ROM limits if exceeded.
     """
+    # Load normative bands if available
+    norm_bands: dict[str, tuple[float, float]] = {}
+    if normative_path and normative_path.exists():
+        try:
+            norm_bands = _load_normative_data(normative_path)
+        except Exception as e:
+            print(f"[sam3d_viz] Warning: could not load normative data: {e}")
+
     fig = plt.figure(figsize=(16, 20))
     gs = fig.add_gridspec(7, 2, hspace=0.5, wspace=0.35)
+    has_normative = False
 
     for output_key, panel_title, joint_type, row, col in _LAYOUT:
         if output_key not in angle_results:
@@ -237,13 +297,34 @@ def plot_sam3d_clinical_angles(
 
             dk = _dof_key(col_name)
             dof_keys.append(dk)
-            data_ranges[dk] = (float(np.nanmin(angles)), float(np.nanmax(angles)))
+            d_min = float(np.nanmin(angles))
+            d_max = float(np.nanmax(angles))
+            data_ranges[dk] = (d_min, d_max)
 
             has_data = True
+
+            # Normative band (behind data line)
+            if col_name in norm_bands:
+                n_lo, n_hi = norm_bands[col_name]
+                ax.axhspan(n_lo, n_hi, color="#B0B0B0", alpha=0.18,
+                           zorder=0)
+                has_normative = True
+
+            # Physiological ROM limits — only draw if data exceeds them
+            if col_name in _PHYSIO_ROM:
+                rom_lo, rom_hi = _PHYSIO_ROM[col_name]
+                if d_min < rom_lo:
+                    ax.axhline(y=rom_lo, color="red", linestyle="--",
+                               linewidth=1.0, alpha=0.6, zorder=1)
+                if d_max > rom_hi:
+                    ax.axhline(y=rom_hi, color="red", linestyle="--",
+                               linewidth=1.0, alpha=0.6, zorder=1)
+
+            # Data line
             label = labels.get(col_name, col_name)
             color = _COLORS.get(dk, "#333333")
             ax.plot(times, angles, label=label, color=color,
-                    linewidth=1.5, alpha=0.9)
+                    linewidth=1.5, alpha=0.9, zorder=2)
 
         if has_data:
             ax.set_title(panel_title, fontsize=11, fontweight="bold", loc="left")
@@ -274,10 +355,17 @@ def plot_sam3d_clinical_angles(
         sum(1 for c in df.columns if c != "time_s")
         for df in angle_results.values()
     )
-    title = f"SAM 3D Clinical Joint Angles ({n_dofs} DOF)"
+    title = f"Clinical Joint Angles ({n_dofs} DOF)"
     if title_prefix:
         title = f"{title_prefix} \u2014 {title}"
     fig.suptitle(title, fontsize=14, fontweight="bold", y=0.995)
+
+    # Legend note for normative bands
+    if has_normative:
+        fig.text(0.5, 0.002,
+                 "Gray bands = normative walking range (Schwartz 2008)  |  "
+                 "Red dashes = physiological ROM limits",
+                 ha="center", fontsize=8, color="#666666")
 
     if output_path:
         plt.savefig(output_path, dpi=dpi, bbox_inches="tight")

@@ -45,6 +45,7 @@ class SmoothingConfig:
 class DetectionConfig:
     model_size: str = "m"
     visibility_min: float = 0.3
+    detect_stride: int = 3
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
 

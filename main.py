@@ -154,7 +154,8 @@ def main() -> None:
             tracking_min_iou=cfg.detection.tracking.min_iou,
             tracking_confirm_hits=cfg.detection.tracking.confirm_hits,
         )
-        result = detector.detect(det_frames, fps, cfg.detection.visibility_min)
+        result = detector.detect(det_frames, fps, cfg.detection.visibility_min,
+                                detect_stride=cfg.detection.detect_stride)
         del det_frames  # free downscaled copy
         boxes_xyxy = result.metadata.get("bounding_boxes")
 
@@ -171,8 +172,31 @@ def main() -> None:
         _timings["2_yolox_detection"] = _time.perf_counter() - _t0
 
         # Step 3: SAM 3D Body lifting
-        sam3d_result = _run_sam3d(cfg, video_path, boxes_xyxy, fps, _timings)
+        # Share decoded frames with SAM 3D subprocess via /dev/shm memmap
+        import os as _os
+        frames_shm_path = None
+        try:
+            shm_path = Path(f"/dev/shm/movalytics_frames_{_os.getpid()}.dat")
+            memmap = np.memmap(str(shm_path), dtype=np.uint8, mode='w+',
+                               shape=frames.shape)
+            memmap[:] = frames
+            memmap.flush()
+            frames_shm_path = shm_path
+            print(f"[main] Shared frames via /dev/shm ({frames.nbytes / 1e9:.1f} GB)")
+        except Exception as e:
+            print(f"[main] /dev/shm unavailable ({e}), SAM 3D will re-decode video")
+
+        sam3d_result = _run_sam3d(cfg, video_path, boxes_xyxy, fps, _timings,
+                                  frames_shm_path=frames_shm_path,
+                                  frames_shape=frames.shape)
         del frames
+
+        # Clean up shared memory
+        if frames_shm_path is not None:
+            try:
+                frames_shm_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         if not sam3d_result.success:
             print(f"[main] ERROR: sam3d failed - {sam3d_result.error}",
@@ -208,6 +232,7 @@ def main() -> None:
         print(f"[main] SAM 3D raw output -> {sam3d_output}")
 
         # Step 4: Extract 30 clinical DOFs from MHR rotations
+        _t0 = _time.perf_counter()
         from src.core.conversion.sam3d_clinical_angles import (
             extract_sam3d_clinical_angles,
         )
@@ -224,13 +249,17 @@ def main() -> None:
             fps,
             calibration_frames=cfg.lifting.sam3d.calibration_frames,
         )
+        _timings["4_clinical_angles"] = _time.perf_counter() - _t0
 
         # Step 5: OpenSim IK from MHR 43-marker clinical set
+        _t0 = _time.perf_counter()
         from src.core.lifting.opensim_ik import run_opensim_ik
 
         if sam3d_result.marker_positions.size > 0:
             # 43-marker clinical set (41 vertex + 2 HJC from MHR joints)
-            from src.core.conversion.mhr_markers_to_trc import mhr_markers_to_trc
+            from src.core.conversion.mhr_markers_to_trc import (
+                mhr_markers_to_trc, mhr_rest_pose_to_trc,
+            )
 
             trc_path = mhr_markers_to_trc(
                 marker_positions=sam3d_result.marker_positions,
@@ -248,14 +277,32 @@ def main() -> None:
                 if sam3d_result.cam_t.size > 0 else None,
             )
             print(f"[main] MHR 76-marker TRC -> {trc_path}")
+
+            # Rest-pose TRC for calibration (subtract model shape offset)
+            rest_trc_path = None
+            if sam3d_result.rest_vertices.size > 0:
+                try:
+                    rest_trc_path = mhr_rest_pose_to_trc(
+                        rest_vertices=sam3d_result.rest_vertices,
+                        marker_names=sam3d_result.marker_names,
+                        subject_height=cfg.subject.height,
+                        output_path=run_dir / "rest_pose_markers.trc",
+                        rest_joint_coords=sam3d_result.rest_joint_coords
+                        if sam3d_result.rest_joint_coords.size > 0 else None,
+                    )
+                    print(f"[main] Rest-pose TRC -> {rest_trc_path}")
+                except Exception as e:
+                    print(f"[main] WARNING: Rest-pose TRC failed: {e}")
         else:
             print("[main] WARNING: No marker atlas found. Run the marker picker "
                   "and symmetry enforcer first (see scripts/build_mhr_atlas.py).",
                   file=sys.stderr)
             # Skip OpenSim IK — no markers available
             trc_path = None
+            rest_trc_path = None
 
         mot_path = None
+        rest_mot_path = None
         if trc_path is not None:
             mot_path = run_opensim_ik(
                 trc_path, run_dir,
@@ -268,13 +315,34 @@ def main() -> None:
             print(f"[main] View with: conda run -n opensim python "
                   f"scripts/viz/opensim_mot_viewer.py --mot {mot_path}")
 
+            # Run IK on rest-pose TRC for calibration
+            if rest_trc_path is not None:
+                try:
+                    rest_ik_dir = run_dir / "rest_pose_ik"
+                    rest_mot_path = run_opensim_ik(
+                        rest_trc_path, rest_ik_dir,
+                        subject_height=cfg.subject.height,
+                        subject_mass=cfg.subject.mass,
+                        sam3d_npz=sam3d_output,
+                        skip_fk=True,
+                    )
+                    print(f"[main] Rest-pose IK calibration -> {rest_mot_path}")
+                except Exception as e:
+                    print(f"[main] WARNING: Rest-pose IK failed: {e}")
+                    rest_mot_path = None
+        _timings["5_opensim_ik"] = _time.perf_counter() - _t0
+
         # Step 6: Save joint angles (prefer OpenSim IK if available)
+        _t0 = _time.perf_counter()
         if mot_path is not None:
             from src.core.kinematics.mot_to_clinical import (
                 extract_opensim_clinical_angles,
             )
-            clinical_angles = extract_opensim_clinical_angles(mot_path)
-            print(f"[main] Clinical angles from OpenSim IK ({len(clinical_angles)} groups)")
+            clinical_angles = extract_opensim_clinical_angles(
+                mot_path, rest_mot_path=rest_mot_path,
+            )
+            print(f"[main] Clinical angles from OpenSim IK ({len(clinical_angles)} groups)"
+                  + (", rest-pose calibrated" if rest_mot_path else ""))
         else:
             clinical_angles = sam3d_angles
             print("[main] Clinical angles from SAM 3D (OpenSim IK unavailable)")
@@ -285,16 +353,23 @@ def main() -> None:
             output_dir=angles_dir,
             basename=video_path.stem,
         )
+        _timings["6_angle_export"] = _time.perf_counter() - _t0
 
-        # Always generate clinical angle visualization
+        # Step 7: Generate clinical angle visualization
+        _t0 = _time.perf_counter()
+        normative_path = Path(__file__).parent / "data" / "normative" / "schwartz2008_angles.json"
         plot_sam3d_clinical_angles(
             clinical_angles,
             output_path=run_dir / f"{video_path.stem}_sam3d_angles.png",
             title_prefix=video_path.stem,
+            normative_path=normative_path if normative_path.exists() else None,
         )
+        _timings["7_visualization"] = _time.perf_counter() - _t0
 
-        # Cleanup and organize
+        # Step 8: Cleanup and organize
+        _t0 = _time.perf_counter()
         cleanup_output_directory(run_dir, video_path.stem)
+        _timings["8_cleanup"] = _time.perf_counter() - _t0
 
         # Pipeline timing summary
         _total = sum(_timings.values())
@@ -319,7 +394,8 @@ def main() -> None:
 # SAM 3D Body helper
 # ---------------------------------------------------------------------------
 
-def _run_sam3d(cfg, video_path, boxes_xyxy, fps, _timings):
+def _run_sam3d(cfg, video_path, boxes_xyxy, fps, _timings,
+               frames_shm_path=None, frames_shape=None):
     """SAM 3D Body → raw MHR body model output."""
     import time as _time
 
@@ -341,10 +417,11 @@ def _run_sam3d(cfg, video_path, boxes_xyxy, fps, _timings):
         kalman_q_vel=cfg.lifting.sam3d.kalman_q_vel,
         ema_alpha_static=cfg.lifting.sam3d.ema_alpha_static,
     )
-    # Pass YOLOX boxes for fast detection (~6fps). Quaternion-space smoother
-    # in sam3d_worker handles occasional orientation flips. vitdet lazy-loads
-    # as fallback only when no boxes are provided.
-    result = lifter.estimate(video_path, boxes_xyxy, fps)
+    result = lifter.estimate(
+        video_path, boxes_xyxy, fps,
+        frames_shm_path=frames_shm_path,
+        frames_shape=frames_shape,
+    )
     _timings["3_sam3d_lifting"] = _time.perf_counter() - _t0
 
     return result

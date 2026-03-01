@@ -130,6 +130,8 @@ class SAM3DLifter:
         video_path: str | Path,
         boxes: np.ndarray | None,
         fps: float,
+        frames_shm_path: "Path | None" = None,
+        frames_shape: tuple | None = None,
     ) -> SAM3DResult:
         """Run SAM 3D Body inference.
 
@@ -138,6 +140,9 @@ class SAM3DLifter:
             boxes: (N, 4) bounding boxes in xyxy pixel coordinates, or None
                 to use vitdet per-frame detection (recommended).
             fps: Video frame rate.
+            frames_shm_path: Path to shared memory memmap with pre-decoded
+                RGB frames. Avoids re-reading video in subprocess.
+            frames_shape: Shape of the frames array (N, H, W, 3).
 
         Returns:
             SAM3DResult with raw MHR body model output.
@@ -171,6 +176,13 @@ class SAM3DLifter:
                 "--kalman-q-vel", str(self.kalman_q_vel),
                 "--ema-alpha-static", str(self.ema_alpha_static),
             ]
+            # Pass pre-decoded frames via shared memory (avoids re-reading video)
+            if frames_shm_path is not None and frames_shape is not None:
+                cmd.extend([
+                    "--frames-memmap", str(frames_shm_path),
+                    "--frames-shape", ",".join(str(d) for d in frames_shape),
+                    "--fps", str(fps),
+                ])
             # Pass bounding boxes only if provided (otherwise vitdet detects)
             if boxes is not None:
                 boxes_path = tmpdir / "boxes.npy"

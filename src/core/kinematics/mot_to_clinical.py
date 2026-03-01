@@ -49,6 +49,15 @@ _MOT_MAP: dict[str, tuple[str, str]] = {
     "elbow_flex_l": ("elbow_L", "elbow_flex_deg"),
 }
 
+# OpenSim → clinical sign corrections.
+# With rest-pose IK calibration, most DOFs are directly correct.
+# Only pelvis_tilt needs a sign flip (OpenSim posterior-positive
+# vs clinical anterior-positive). Hip flexion convention matches.
+_SIGN_CORRECTIONS: dict[str, float] = {
+    # OpenSim pelvis_tilt positive = posterior tilt; clinical = anterior tilt
+    "pelvis_tilt": -1.0,
+}
+
 # Ordered list of clinical groups (matches demo page expectations)
 _GROUP_ORDER = [
     "pelvis", "hip_R", "hip_L", "knee_R", "knee_L",
@@ -80,8 +89,13 @@ def _parse_mot(mot_path: Path) -> tuple[list[str], np.ndarray]:
 
 def extract_opensim_clinical_angles(
     mot_path: Path | str,
+    rest_mot_path: Path | str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Extract clinical joint angles from an OpenSim IK .mot file.
+
+    If rest_mot_path is provided, the rest-pose angles are subtracted
+    from all frames. This removes constant offsets caused by model
+    shape mismatch (e.g. MHR pelvis proportions differ from OpenSim).
 
     Returns dict of DataFrames keyed by joint group name, in the same
     format as extract_sam3d_clinical_angles() so that
@@ -89,6 +103,18 @@ def extract_opensim_clinical_angles(
     """
     mot_path = Path(mot_path)
     columns, data = _parse_mot(mot_path)
+
+    # Parse rest-pose angles for calibration offset
+    rest_offsets: dict[str, float] = {}
+    if rest_mot_path is not None:
+        rest_mot_path = Path(rest_mot_path)
+        if rest_mot_path.exists():
+            rest_cols, rest_data = _parse_mot(rest_mot_path)
+            # Single frame (or average if multiple)
+            for mot_name in _MOT_MAP:
+                if mot_name in rest_cols:
+                    idx = rest_cols.index(mot_name)
+                    rest_offsets[mot_name] = float(np.mean(rest_data[:, idx]))
 
     time_col = data[:, columns.index("time")]
 
@@ -104,7 +130,9 @@ def extract_opensim_clinical_angles(
             if mot_name not in columns:
                 continue
             col_idx = columns.index(mot_name)
-            group_cols[clinical_name] = data[:, col_idx]
+            sign = _SIGN_CORRECTIONS.get(mot_name, 1.0)
+            values = data[:, col_idx] - rest_offsets.get(mot_name, 0.0)
+            group_cols[clinical_name] = values * sign
 
         # Only include groups that have at least one angle column
         if len(group_cols) > 1:
