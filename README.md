@@ -30,7 +30,7 @@ data/output/<video>/
 | Python | 3.12 | Managed by uv |
 | [uv](https://docs.astral.sh/uv/) | Latest | Python package manager |
 | [Conda](https://docs.conda.io/) | Any | Required for `sam3d` and `opensim` environments |
-| NVIDIA GPU | Recommended | 8 GB+ VRAM for real-time inference |
+| NVIDIA GPU | Required | CUDA-capable, 8 GB+ VRAM (onnxruntime-gpu) |
 
 ---
 
@@ -107,8 +107,12 @@ After processing one or more videos, generate a shareable HTML demo:
 
 ```bash
 uv run python scripts/viz/demo_page.py
-open data/demo/demo.html
+python -m http.server 8080 --directory data/demo
 ```
+
+Then open [http://localhost:8080/demo.html](http://localhost:8080/demo.html) in your browser.
+
+> **Note:** The demo page loads data via `fetch()`, so it must be served over HTTP -- opening the file directly (`file://`) will not work.
 
 The demo page auto-discovers all processed videos in `data/output/` and generates a standalone HTML file with:
 
@@ -251,7 +255,8 @@ movalytics-pipeline/
 | No person detected | Lower the threshold: `--visibility-min 0.1` |
 | OpenSim IK fails | Verify: `conda run -n opensim python -c "import opensim"` |
 | SAM 3D subprocess hangs | Check: `conda run -n sam3d python --version` returns 3.11 |
-| PyTorch CUDA error | RTX 5080 needs sm_120 -- requires PyTorch nightly or >=2.7 |
+| Demo page blank / fetch error | Serve over HTTP: `python -m http.server 8080 --directory data/demo` |
+| PyTorch CUDA error | RTX 50-series (sm_120) requires PyTorch nightly or >=2.7 |
 
 ---
 
