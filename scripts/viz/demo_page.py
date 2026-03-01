@@ -2894,8 +2894,9 @@ def main() -> None:
 
     size_kb = out_html.stat().st_size / 1024
     print(f"Demo page written: {out_html} ({size_kb:.0f} KB)")
-    print(f"\nTo view: python -m http.server 8001 --directory {output_dir.relative_to(PROJECT_ROOT)}")
+    print(f"\nTo view: uv run python scripts/viz/serve_demo.py --port 8001 --directory {output_dir.relative_to(PROJECT_ROOT)}")
     print(f"  then open http://localhost:8001/demo.html")
+    print(f"  (serve_demo.py supports Range requests needed for video seeking)")
 
 
 if __name__ == "__main__":
