@@ -3,7 +3,9 @@
 3D human pose estimation from monocular video. Clinical joint angles and a scaled musculoskeletal model -- the same measurements a motion capture lab would give you, from a single camera.
 
 ```
-Video --> YOLOX Detection --> SAM 3D Body (127 joints) --> Clinical Angles (30 DOFs) --> OpenSim IK
+Video --> YOLOX Detection --> SAM 3D Body (127 joints) --> Clinical Angles (30 DOFs)
+                                    |
+                                    +--> Surface Markers + Joint Centers --> OpenSim IK (26 DOFs)
 ```
 
 ---
@@ -164,23 +166,45 @@ CLI flags always override values from the config file.
 
 ### 1. YOLOX Detection
 
-Detects person bounding boxes in each frame. IOU-based tracking associates detections across frames, and OneEuro smoothing reduces jitter in the bounding box coordinates before they are passed downstream.
+Detects person bounding boxes per frame. IOU-based tracking associates detections across frames, and OneEuro smoothing reduces jitter before passing downstream.
 
 ### 2. SAM 3D Body
 
 Meta's 840M-parameter model (DINOv3 backbone) estimates a 127-joint MHR body model with per-joint rotations, body shape, and mesh vertices. Runs as a subprocess via `conda run -n sam3d`. Post-processing applies shape stabilization (median PCA), Kalman filtering on body pose, and EMA smoothing on global rotation.
 
-### 3. Clinical Angles
+### 3. Clinical Angles (30 DOFs)
 
-Extracts 30 degrees of freedom from the MHR global rotation matrices: hip, knee, ankle, trunk, shoulder, elbow, and wrist -- each decomposed into flexion/extension, abduction/adduction, and internal/external rotation.
+Extracts 30 degrees of freedom directly from the MHR global rotation matrices (no markers or IK solver required). Each joint is decomposed using ZXY Euler angles in an ISB-aligned clinical frame:
 
-### 4. Surface Markers
+- **Pelvis** (3): tilt, list, rotation
+- **Hip L/R** (3x2): flex/ext, abd/add, int/ext rotation
+- **Knee L/R** (1x2): flexion
+- **Ankle L/R** (2x2): dorsi/plantarflex, inversion/eversion
+- **Trunk** (3): flex/ext, lateral bend, rotation
+- **Shoulder L/R** (3x2): flex/ext, abd/add, int/ext rotation
+- **Elbow L/R** (1x2): flexion
+- **Wrist L/R** (2x2): flex/ext, radial/ulnar deviation
 
-65 anatomical surface markers are sampled from MHR mesh vertices using a pre-built atlas (`build_mhr_atlas.py`). The markers are exported in TRC format for consumption by OpenSim.
+### 4. Surface Markers & Joint Centers
 
-### 5. OpenSim IK
+An optimized surface marker atlas (41 anatomical markers from MHR mesh vertices) is combined with 2 computed hip joint centers (Bell's method), 10 MHR skeleton joint centers, and 34 MHR70 keypoints -- totalling 87 markers in the TRC file. MHR joint centers are weighted highest in IK (weight 100 for hips) to anchor the skeleton, while surface markers provide anatomical constraint.
 
-A scaled LaiUhlrich2022 full-body musculoskeletal model is generated from the subject's height and marker positions. Inverse kinematics solves joint angles that best fit the TRC markers, and a forward kinematics pass exports body segment positions for the demo page.
+### 5. OpenSim IK (26 DOFs)
+
+A modified LaiUhlrich2022 musculoskeletal model is per-segment scaled from the SAM 3D rest pose, then inverse kinematics solves 26 DOFs that best fit the 87-marker TRC:
+
+| Segment | DOFs | Coordinates |
+|---------|------|-------------|
+| Pelvis | 3 | tilt, list, rotation |
+| Hip L/R | 3x2 = 6 | flexion, adduction, rotation |
+| Knee L/R | 1x2 = 2 | flexion (coupled abd/rot) |
+| Ankle L/R | 2x2 = 4 | dorsiflexion, subtalar |
+| Trunk (L5/S1) | 3 | extension, bending, rotation |
+| Shoulder L/R | 3x2 = 6 | flexion, adduction, rotation |
+| Elbow L/R | 1x2 = 2 | flexion |
+| Wrist L/R | welded | -- |
+
+A forward kinematics pass then exports body segment positions for the demo page.
 
 ---
 
