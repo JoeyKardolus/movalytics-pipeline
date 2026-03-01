@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MHR Mesh ↔ OpenSim Markers: interactive labeling</title>
+    <link rel="stylesheet" href="./style.css?v=5" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="row">
+        <div class="group grow">
+          <label>OpenSim scene JSON</label>
+          <input id="opencapScenePath" value="" placeholder="e.g. ../../../data/output/Max/opensim_scene.json" />
+        </div>
+        <div class="group grow">
+          <label>MHR mesh JSON</label>
+          <input id="smplMeshPath" value="" placeholder="e.g. ../../../data/output/Max/mhr_mesh.json" />
+        </div>
+        <button id="load">Load</button>
+        <button id="exportJson">Export JSON</button>
+        <button id="exportCsv">Export CSV</button>
+      </div>
+      <div class="row row2">
+        <div class="group grow">
+          <label>Import JSON (resume labeling)</label>
+          <input id="importJson" type="file" accept=".json,application/json" />
+        </div>
+        <div class="group">
+          <label>Layout</label>
+          <select id="layoutMode">
+            <option value="overlay" selected>Overlay (label after alignment)</option>
+            <option value="split">Side-by-side (compare)</option>
+          </select>
+        </div>
+        <div class="group">
+          <label>Split distance</label>
+          <input id="splitDistance" type="number" min="0" max="5" step="0.05" value="1.2" />
+        </div>
+        <div class="group">
+          <label>MHR initial Y rotation</label>
+          <select id="smplYawPreset">
+            <option value="0">0°</option>
+            <option value="-90">-90°</option>
+            <option value="90">90°</option>
+            <option value="180" selected>180° (MHR default)</option>
+          </select>
+        </div>
+        <div class="group">
+          <label>Scale</label>
+          <label class="check inline"><input id="lockScaleToBsm" type="checkbox" />Lock (BSM C7-to-ground)</label>
+        </div>
+        <button id="bboxAlign">Rough align (BBox)</button>
+        <button id="fitAlign">Fit align (mapped points)</button>
+        <button id="resetSmpl">Reset MHR</button>
+        <button id="fitCamera">Fit camera</button>
+      </div>
+      <div id="meta" class="meta">Not loaded — enter paths to MHR mesh and OpenSim scene JSON, then click Load</div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel sidebar">
+        <div class="section">
+          <div class="section-title">Display</div>
+          <div class="two-col">
+            <div>
+              <div class="sub-title">OpenSim</div>
+              <label class="check"><input id="showOpenCapMesh" type="checkbox" />Segment meshes (VTP)</label>
+              <label class="check"><input id="showOpenCapSkeleton" type="checkbox" checked />Skeleton</label>
+              <label class="check"><input id="showOpenCapMarkers" type="checkbox" checked />Markers</label>
+              <label class="check"><input id="showOpenCapLabels" type="checkbox" />Marker names</label>
+            </div>
+            <div>
+              <div class="sub-title">MHR</div>
+              <label class="check"><input id="showSmplMesh" type="checkbox" checked />Mesh</label>
+              <label class="check"><input id="showSmplWireframe" type="checkbox" />Wireframe</label>
+              <label class="check"><input id="showMappedPoints" type="checkbox" checked />Mapped points</label>
+            </div>
+          </div>
+          <label class="check"><input id="showGrid" type="checkbox" checked />Grid</label>
+          <label class="check"><input id="showAxes" type="checkbox" checked />Axes</label>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Annotation</div>
+          <div class="selected">
+            <span class="selected-title">Current marker</span>
+            <code id="selectedMarker">(none)</code>
+          </div>
+          <div class="selected">
+            <span class="selected-title">MHR pick</span>
+            <code id="selectedSmpl">(none)</code>
+          </div>
+          <div class="row buttons">
+            <button id="clearCurrent">Clear current</button>
+            <button id="clearAll">Clear all</button>
+          </div>
+          <label class="check"><input id="autoAdvance" type="checkbox" checked />Auto-advance to next unlabelled marker</label>
+          <label class="check"><input id="autoSymmetry" type="checkbox" checked />Auto-symmetry (mirror L↔R)</label>
+          <button id="autoSite" class="full-width">Auto-site remaining (nearest mesh point)</button>
+          <button id="loadAtlas" class="full-width">Load atlas (auto-generated)</button>
+          <div class="hint small">Usage: pick a marker from the list/3D, then click on the MHR mesh. Export supports vertex + face + barycentric. Load atlas to verify auto-sited markers.</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Marker size</div>
+          <input id="markerSize" type="range" min="0.005" max="0.06" step="0.001" value="0.02" />
+        </div>
+
+        <div class="section">
+          <div class="section-title">Skeleton scale</div>
+          <div class="scale-sliders">
+            <label class="scale-row"><span>Global</span><input id="scaleGlobal" type="range" min="0.7" max="1.3" step="0.01" value="1.0" /><code id="scaleGlobalVal">1.00</code></label>
+            <label class="scale-row"><span>Torso</span><input id="scaleTorso" type="range" min="0.7" max="1.3" step="0.01" value="0.94" /><code id="scaleTorsoVal">0.94</code></label>
+            <label class="scale-row"><span>Clavicle</span><input id="scaleClavicle" type="range" min="0.5" max="1.3" step="0.01" value="1.0" /><code id="scaleClavicleVal">1.00</code></label>
+            <label class="scale-row"><span>Upper arm</span><input id="scaleHumerus" type="range" min="0.5" max="1.3" step="0.01" value="0.82" /><code id="scaleHumerusVal">0.82</code></label>
+            <label class="scale-row"><span>Forearm</span><input id="scaleUlna" type="range" min="0.5" max="1.3" step="0.01" value="0.85" /><code id="scaleUlnaVal">0.85</code></label>
+            <label class="scale-row"><span>Hand</span><input id="scaleHand" type="range" min="0.5" max="1.3" step="0.01" value="0.85" /><code id="scaleHandVal">0.85</code></label>
+            <label class="scale-row"><span>Thigh</span><input id="scaleFemur" type="range" min="0.7" max="1.3" step="0.01" value="0.94" /><code id="scaleFemurVal">0.94</code></label>
+            <label class="scale-row"><span>Shank</span><input id="scaleTibia" type="range" min="0.7" max="1.3" step="0.01" value="0.94" /><code id="scaleTibiaVal">0.94</code></label>
+            <label class="scale-row"><span>Foot</span><input id="scaleFoot" type="range" min="0.5" max="1.3" step="0.01" value="0.80" /><code id="scaleFootVal">0.80</code></label>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title" id="markerCountTitle">Markers</div>
+          <input id="markerFilter" class="filter" placeholder="Search (e.g., C7 / ASIS / knee)" />
+          <div id="markerList" class="marker-list"></div>
+        </div>
+      </aside>
+
+      <section class="panel viewer-panel">
+        <div id="viewer" class="viewer"></div>
+        <div class="hint">
+          Drag to rotate, scroll to zoom, right-click to pan. Click an OpenSim marker to select, then click the MHR mesh to label.
+        </div>
+      </section>
+    </main>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module" src="./main.js?v=10"></script>
+  </body>
+</html>

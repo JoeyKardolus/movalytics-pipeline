@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# Virtual environments
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# uv lock (regenerated on install)
+uv.lock
+
+# Data directories (keep structure via .gitkeep)
+data/input/*
+!data/input/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/demo/
+
+# SAM 3D Body model weights (downloaded via scripts/tools/download_models.py)
+models/sam-3d-body-dinov3/
+
+# Environment
+.env
+
+# Windows Zone.Identifier artifacts
+*:Zone.Identifier
+
+# OS
+.DS_Store
+Thumbs.db
