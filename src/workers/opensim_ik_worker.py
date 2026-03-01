@@ -813,9 +813,20 @@ def run_ik(
         marker_task.setWeight(weight)
         task_set.cloneAndAppend(marker_task)
 
-    # No pelvis coordinate constraints — MHR joint centers at weight 50
-    # dominate pelvis positioning (skeleton > surface mesh deformation).
-    # Surface markers (ASIS/PSIS=15, Bell's HJC=10) provide orientation.
+    # Lock DOFs not in the 26-DOF clinical setup
+    lock_coords = [
+        "knee_angle_r_beta", "knee_angle_l_beta",
+        "subtalar_angle_r", "subtalar_angle_l",
+        "mtp_angle_r", "mtp_angle_l",
+        "pro_sup_r", "pro_sup_l",
+    ]
+    coord_set = scaled_model.getCoordinateSet()
+    for cname in lock_coords:
+        try:
+            coord_set.get(cname).set_locked(True)
+        except Exception:
+            pass
+    scaled_model.initSystem()
 
     print(f"[opensim-ik] Running IK: {time_range[0]:.3f}s - {time_range[1]:.3f}s")
     t0 = time.perf_counter()

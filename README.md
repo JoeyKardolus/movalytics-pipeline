@@ -3,9 +3,7 @@
 3D human pose estimation from monocular video. Clinical joint angles and a scaled musculoskeletal model -- the same measurements a motion capture lab would give you, from a single camera.
 
 ```
-Video --> YOLOX Detection --> SAM 3D Body (127 joints) --> Clinical Angles (30 DOFs)
-                                    |
-                                    +--> Surface Markers + Joint Centers --> OpenSim IK (26 DOFs)
+Video --> YOLOX Detection --> SAM 3D Body (127 joints) --> Surface Markers + Joint Centers --> OpenSim IK (26 DOFs)
 ```
 
 ---
@@ -172,39 +170,26 @@ Detects person bounding boxes per frame. IOU-based tracking associates detection
 
 Meta's 840M-parameter model (DINOv3 backbone) estimates a 127-joint MHR body model with per-joint rotations, body shape, and mesh vertices. Runs as a subprocess via `conda run -n sam3d`. Post-processing applies shape stabilization (median PCA), Kalman filtering on body pose, and EMA smoothing on global rotation.
 
-### 3. Clinical Angles (30 DOFs)
-
-Extracts 30 degrees of freedom directly from the MHR global rotation matrices (no markers or IK solver required). Each joint is decomposed using ZXY Euler angles in an ISB-aligned clinical frame:
-
-- **Pelvis** (3): tilt, list, rotation
-- **Hip L/R** (3x2): flex/ext, abd/add, int/ext rotation
-- **Knee L/R** (1x2): flexion
-- **Ankle L/R** (2x2): dorsi/plantarflex, inversion/eversion
-- **Trunk** (3): flex/ext, lateral bend, rotation
-- **Shoulder L/R** (3x2): flex/ext, abd/add, int/ext rotation
-- **Elbow L/R** (1x2): flexion
-- **Wrist L/R** (2x2): flex/ext, radial/ulnar deviation
-
-### 4. Surface Markers & Joint Centers
+### 3. Surface Markers & Joint Centers
 
 An optimized surface marker atlas (41 anatomical markers from MHR mesh vertices) is combined with 2 computed hip joint centers (Bell's method), 10 MHR skeleton joint centers, and 34 MHR70 keypoints -- totalling 87 markers in the TRC file. MHR joint centers are weighted highest in IK (weight 100 for hips) to anchor the skeleton, while surface markers provide anatomical constraint.
 
-### 5. OpenSim IK (26 DOFs)
+### 4. OpenSim IK → Clinical Angles (26 DOFs)
 
-A modified LaiUhlrich2022 musculoskeletal model is per-segment scaled from the SAM 3D rest pose, then inverse kinematics solves 26 DOFs that best fit the 87-marker TRC:
+A modified LaiUhlrich2022 musculoskeletal model is per-segment scaled from the SAM 3D rest pose, then inverse kinematics solves 26 DOFs that best fit the 87-marker TRC. The IK output is the primary source for all clinical angle CSVs and visualizations.
 
 | Segment | DOFs | Coordinates |
 |---------|------|-------------|
 | Pelvis | 3 | tilt, list, rotation |
 | Hip L/R | 3x2 = 6 | flexion, adduction, rotation |
 | Knee L/R | 1x2 = 2 | flexion (coupled abd/rot) |
-| Ankle L/R | 2x2 = 4 | dorsiflexion, subtalar |
+| Ankle L/R | 1x2 = 2 | dorsiflexion |
 | Trunk (L5/S1) | 3 | extension, bending, rotation |
 | Shoulder L/R | 3x2 = 6 | flexion, adduction, rotation |
 | Elbow L/R | 1x2 = 2 | flexion |
 | Wrist L/R | welded | -- |
 
-A forward kinematics pass then exports body segment positions for the demo page.
+Post-processing applies quaternion-based continuity enforcement, despiking, and Butterworth 6 Hz low-pass filtering. A forward kinematics pass exports body segment positions for the demo page.
 
 ---
 

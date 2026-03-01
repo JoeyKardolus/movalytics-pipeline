@@ -255,6 +255,7 @@ def main() -> None:
             # Skip OpenSim IK — no markers available
             trc_path = None
 
+        mot_path = None
         if trc_path is not None:
             mot_path = run_opensim_ik(
                 trc_path, run_dir,
@@ -267,17 +268,27 @@ def main() -> None:
             print(f"[main] View with: conda run -n opensim python "
                   f"scripts/viz/opensim_mot_viewer.py --mot {mot_path}")
 
-        # Step 6: Save joint angles
+        # Step 6: Save joint angles (prefer OpenSim IK if available)
+        if mot_path is not None:
+            from src.core.kinematics.mot_to_clinical import (
+                extract_opensim_clinical_angles,
+            )
+            clinical_angles = extract_opensim_clinical_angles(mot_path)
+            print(f"[main] Clinical angles from OpenSim IK ({len(clinical_angles)} groups)")
+        else:
+            clinical_angles = sam3d_angles
+            print("[main] Clinical angles from SAM 3D (OpenSim IK unavailable)")
+
         angles_dir = run_dir / "joint_angles"
         save_comprehensive_angles_csv(
-            sam3d_angles,
+            clinical_angles,
             output_dir=angles_dir,
             basename=video_path.stem,
         )
 
         # Always generate clinical angle visualization
         plot_sam3d_clinical_angles(
-            sam3d_angles,
+            clinical_angles,
             output_path=run_dir / f"{video_path.stem}_sam3d_angles.png",
             title_prefix=video_path.stem,
         )
