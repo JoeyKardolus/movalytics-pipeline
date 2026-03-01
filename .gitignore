@@ -23,7 +23,8 @@ data/output/*
 data/demo/
 
 # SAM 3D Body model weights (downloaded via scripts/tools/download_models.py)
-models/sam-3d-body-dinov3/
+models/sam-3d-body-dinov3/*.ckpt
+models/sam-3d-body-dinov3/assets/
 
 # Environment
 .env
