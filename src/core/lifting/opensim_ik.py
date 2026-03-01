@@ -77,40 +77,49 @@ def run_opensim_ik(
 
     print(f"[opensim-ik] Running: conda run -n {conda_env} python opensim_ik_worker.py")
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-    # Print worker output
-    for line in result.stdout.splitlines():
-        if line.startswith("[opensim-ik]"):
-            print(line)
-
-    if result.returncode != 0:
-        print(f"[opensim-ik] STDERR:\n{result.stderr}", file=sys.stderr)
-        raise RuntimeError(
-            f"OpenSim IK failed (exit code {result.returncode}): "
-            f"{result.stderr[:500]}"
+    timed_out = False
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
 
-    # Parse .mot path from stdout
-    mot_path = None
-    for line in result.stdout.splitlines():
-        if line.startswith("MOT_PATH="):
-            mot_path = Path(line.split("=", 1)[1].strip())
-            break
+        # Print worker output
+        for line in result.stdout.splitlines():
+            if line.startswith("[opensim-ik]"):
+                print(line)
+
+        if result.returncode != 0:
+            print(f"[opensim-ik] STDERR:\n{result.stderr}", file=sys.stderr)
+            raise RuntimeError(
+                f"OpenSim IK failed (exit code {result.returncode}): "
+                f"{result.stderr[:500]}"
+            )
+
+        # Parse .mot path from stdout
+        mot_path = None
+        for line in result.stdout.splitlines():
+            if line.startswith("MOT_PATH="):
+                mot_path = Path(line.split("=", 1)[1].strip())
+                break
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        mot_path = None
 
     if mot_path is None or not mot_path.exists():
-        # Fallback: look for .mot file in output dir
+        # Fallback: look for .mot file in output dir (covers timeout case
+        # where IK completed but FK or conda run hung)
         mot_files = list(output_dir.glob("*_ik.mot"))
         if mot_files:
             mot_path = mot_files[0]
+            if timed_out:
+                print(f"[opensim-ik] Timeout after {timeout}s but .mot exists — continuing")
         else:
             raise RuntimeError(
-                f"OpenSim IK completed but no .mot file found in {output_dir}"
+                f"OpenSim IK {'timed out' if timed_out else 'completed'} "
+                f"but no .mot file found in {output_dir}"
             )
 
     print(f"[opensim-ik] Output: {mot_path}")
